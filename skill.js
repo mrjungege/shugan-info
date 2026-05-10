@@ -1,18 +1,16 @@
 const https = require("https");
 const WebSocket = require("ws");
+const { randomUUID } = require("crypto");
 
 const WS_URL = "wss://www.shugan.tech/wss/";
-const FREE_KEYWORDS = ['免费', '福利', '薅羊毛', '白嫖', '免费领取', '福利活动', '羊毛', '免费试用', '免费体验', '免费活动', '免费福利'];
-const ACTIVITY_KEYWORDS = ['周年庆', '店庆', '节日活动', '店庆活动', '周年庆典', '品牌活动', '庆典', '春节', '元宵节', '端午节', '中秋节', '重阳节', '情人节', '母亲节', '父亲节', '儿童节', '圣诞节', '感恩节', '万圣节', '元旦', '双十一', '双十二', '618', '黑色星期五', '活动', '商场活动'];
-const PROMO_KEYWORDS = ['促销', '优惠', '折扣', '打折', '商场', '特价', '优惠券', '满减', '限时优惠', '折扣券'];
 
 function wrapInstruction(longitude, latitude, mode) {
   return JSON.stringify({
     command: 'sense',
     areaType: 1,
-    gps: {lng: longitude, lat: latitude},
+    gps: { lng: longitude, lat: latitude },
     senseRange: 2000,
-    uuid: '0eb25ca4-8b72-49d2-a7c3-1e44f13d3d9a', //todo generate uuid randomly
+    uuid: randomUUID(),
     targetName: 'WEB',
     targetNamespace: 'FACILITY',
     matchKeyword: '',
@@ -29,7 +27,7 @@ function createWebSocket() {
 
 function fetchUrlContent(url) {
   return new Promise((resolve, reject) => {
-    const req = https.get(url, { timeout: 10000 }, (res) => {
+    const req = https.get(url, { timeout: 30000 }, (res) => {
       let body = "";
       res.setEncoding("utf8");
 
@@ -54,77 +52,44 @@ function fetchUrlContent(url) {
 }
 
 function buildResultObject(uuid, mode) {
-  if (mode === 'free' || mode === 'activity') {
+  if (mode === 'search') {
     return {
-      mode,
-      mall_name: null
+      mall_name: null,
+      urls: []
     };
   }
 
   return {
-    mode,
     promotion_url_for_ai: `https://www.shugan.tech/building/queryPromotion/${uuid}/`,
     promotion_url_for_human: `https://www.shugan.tech/building/?bid=${uuid}#/pages/AiPoster/AiPoster`
   };
 }
 
-function filterUrlsByKeywords(obj, keywords) {
-  const results = [];
+/**
+ * 获取商场所有店铺的URL列表（search模式专用）
+ * 返回原始数据，由openclaw用LLM进行语义匹配
+ */
+async function getShopUrlsForSearch(obj) {
+  if (!obj.shops || typeof obj.shops !== 'object') {
+    return [];
+  }
 
-  if (obj.shops && typeof obj.shops === 'object') {
-    for (const [shopId, shopData] of Object.entries(obj.shops)) {
-      if (shopData && typeof shopData === 'object' && shopData.url && typeof shopData.url === 'object') {
-        const filtered = {};
-        for (const [key, value] of Object.entries(shopData.url)) {
-          if (typeof value === 'string' && keywords.some(word => key.includes(word))) {
-            filtered[key] = value;
-          }
-        }
-        if (Object.keys(filtered).length > 0) {
-          results.push({
-            name: shopData.name || 'Unknown Shop',
-            filtered
-          });
-        }
+  const results = [];
+  for (const [shopId, shopData] of Object.entries(obj.shops)) {
+    if (shopData && typeof shopData === 'object' && shopData.url && typeof shopData.url === 'object') {
+      const urlEntries = Object.entries(shopData.url).filter(([_, url]) => typeof url === 'string');
+      if (urlEntries.length > 0) {
+        results.push({
+          shopName: shopData.name || 'Unknown Shop',
+          urls: Object.fromEntries(urlEntries)
+        });
       }
     }
   }
-
   return results;
 }
 
-function filterFreeUrls(obj) {
-  return filterUrlsByKeywords(obj, FREE_KEYWORDS);
-}
-
-function filterActivityUrls(obj) {
-  return filterUrlsByKeywords(obj, ACTIVITY_KEYWORDS);
-}
-
-function inferModeFromKeywords(keywordString) {
-  if (!keywordString || typeof keywordString !== 'string') {
-    return 'promotion';
-  }
-  const normalized = keywordString.toLowerCase();
-  for (const word of FREE_KEYWORDS) {
-    if (normalized.includes(word)) {
-      return 'free';
-    }
-  }
-  for (const word of ACTIVITY_KEYWORDS) {
-    if (normalized.includes(word)) {
-      return 'activity';
-    }
-  }
-  for (const word of PROMO_KEYWORDS) {
-    if (normalized.includes(word)) {
-      return 'promotion';
-    }
-  }
-  return 'promotion';
-}
-
-const NO_DATA_TIMEOUT_MS = 5000;
+const NO_DATA_TIMEOUT_MS = 10000;
 
 async function sendInstruction(longitude, latitude, mode, onChunk) {
   const payload = wrapInstruction(longitude, latitude, mode);
@@ -133,6 +98,10 @@ async function sendInstruction(longitude, latitude, mode, onChunk) {
   return new Promise((resolve, reject) => {
     let closed = false;
     let idleTimer = null;
+    let resolved = false;
+    let pendingCount = 0;
+    const processedUuids = new Set();
+    const allResults = [];
 
     const resetIdleTimer = () => {
       if (idleTimer) {
@@ -149,6 +118,53 @@ async function sendInstruction(longitude, latitude, mode, onChunk) {
       if (idleTimer) {
         clearTimeout(idleTimer);
         idleTimer = null;
+      }
+    };
+
+    const safeResolve = (val) => {
+      if (!resolved) {
+        resolved = true;
+        resolve(val);
+      }
+    };
+
+    const processItem = async (item) => {
+      if (!item?.parameters?.url) return;
+      const url = item.parameters.url;
+      const bidIndex = url.indexOf('bid=');
+      if (bidIndex === -1) return;
+
+      const uuid = url.substring(bidIndex + 4).split('&')[0];
+      if (processedUuids.has(uuid)) return;
+      processedUuids.add(uuid);
+
+      const result = buildResultObject(uuid, mode);
+      if (mode === 'search') {
+        pendingCount++;
+        const buildingInfoUrl = `https://www.shugan.tech/building/buildingInfo/${uuid}/`;
+        const shopUrl = `https://www.shugan.tech/building/shopAndOffice/${uuid}/`;
+        try {
+          const [buildingData, shopData] = await Promise.all([
+            fetchUrlContent(buildingInfoUrl),
+            fetchUrlContent(shopUrl)
+          ]);
+          const buildingJson = JSON.parse(buildingData);
+          if (buildingJson?.name) {
+            result.mall_name = buildingJson.name;
+          }
+          const shopJson = JSON.parse(shopData);
+          result.urls = await getShopUrlsForSearch(shopJson);
+          allResults.push(result);
+        } catch (e) {
+          console.error('[shugan-info] fetch error:', e.message);
+        } finally {
+          pendingCount--;
+          if (pendingCount === 0 && closed) {
+            safeResolve({ code: 1000, reason: 'completed' });
+          }
+        }
+      } else {
+        allResults.push(result);
       }
     };
 
@@ -170,61 +186,11 @@ async function sendInstruction(longitude, latitude, mode, onChunk) {
         const json = JSON.parse(text);
         if (Array.isArray(json) && json.length > 0) {
           for (const item of json) {
-            if (item && typeof item === 'object' && item.parameters && item.parameters.url) {
-              const url = item.parameters.url;
-              const bidIndex = url.indexOf('bid=');
-              if (bidIndex !== -1) {
-                const uuid = url.substring(bidIndex + 4).split('&')[0];
-                const result = buildResultObject(uuid, mode);
-                if (mode === 'free' || mode === 'activity') {
-                  const buildingInfoUrl = `https://www.shugan.tech/building/buildingInfo/${uuid}/`;
-                  const shopUrl = `https://www.shugan.tech/building/shopAndOffice/${uuid}/`;
-                  try {
-                    const buildingData = await fetchUrlContent(buildingInfoUrl);
-                    const buildingJson = JSON.parse(buildingData);
-                    if (buildingJson && typeof buildingJson.name === 'string') {
-                      result.mall_name = buildingJson.name;
-                    }
-                  } catch (e) {
-                    // ignore building info fetch failure, still return what we have
-                  }
-
-                  try {
-                    const shopData = await fetchUrlContent(shopUrl);
-                    const shopJson = JSON.parse(shopData);
-                    const filtered = mode === 'activity' ? filterActivityUrls(shopJson) : filterFreeUrls(shopJson);
-                    result.filtered = filtered;
-                    if (filtered.length > 0 && typeof onChunk === "function") {
-                      onChunk(JSON.stringify(result));
-                    }
-                  } catch (e) {
-                    // no results if fetch or parse fails
-                  }
-                } else {
-                  if (typeof onChunk === "function") {
-                    onChunk(JSON.stringify(result));
-                  }
-                }
-              } else {
-                if (typeof onChunk === "function") {
-                  onChunk("");
-                }
-              }
-            } else {
-              if (typeof onChunk === "function") {
-                onChunk("");
-              }
-            }
-          }
-        } else {
-          if (typeof onChunk === "function") {
-            onChunk("");
+            await processItem(item);
           }
         }
       } catch (e) {
-        if (typeof onChunk === "function") {
-          onChunk("");
-        }
+        console.error('[shugan-info] parse error:', e.message);
       }
     });
 
@@ -240,7 +206,24 @@ async function sendInstruction(longitude, latitude, mode, onChunk) {
       cleanup();
       if (!closed) {
         closed = true;
-        resolve({ code, reason: reason.toString() });
+        const cleanupAndResolve = () => {
+          if (typeof onChunk === "function") {
+            onChunk(JSON.stringify({ mode, malls: allResults }));
+          }
+          safeResolve({ code, reason: reason.toString() });
+        };
+        if (pendingCount === 0) {
+          cleanupAndResolve();
+        } else {
+          const maxWait = 300000;
+          const startTime = Date.now();
+          const checkInterval = setInterval(() => {
+            if (pendingCount === 0 || Date.now() - startTime > maxWait) {
+              clearInterval(checkInterval);
+              cleanupAndResolve();
+            }
+          }, 5000);
+        }
       }
     });
   });
@@ -256,7 +239,7 @@ async function handleUserInstruction(longitude, latitude, optionsOrOnChunk, onCh
     options = optionsOrOnChunk;
   }
 
-  const mode = options.mode || inferModeFromKeywords(options.keywords || options.query || '');
+  const mode = options.mode || 'search';
   return sendInstruction(longitude, latitude, mode, callback);
 }
 
@@ -269,13 +252,13 @@ if (require.main === module) {
   }
   const longitude = parseFloat(args[0]);
   const latitude = parseFloat(args[1]);
-  const mode = args[2] || 'promotion';
+  const mode = args[2] || 'search';
   if (isNaN(longitude) || isNaN(latitude)) {
     console.log("Error: longitude and latitude must be valid numbers");
     process.exit(1);
   }
-  if (mode !== 'promotion' && mode !== 'free' && mode !== 'activity') {
-    console.log("Error: mode must be 'promotion', 'free', or 'activity'");
+  if (mode !== 'promotion' && mode !== 'search') {
+    console.log("Error: mode must be 'promotion' or 'search'");
     process.exit(1);
   }
   handleUserInstruction(longitude, latitude, { mode }, (chunk) => {
