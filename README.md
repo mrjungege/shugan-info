@@ -38,19 +38,39 @@ node skill.js 121.4737 31.2304 search
   - `options.mode`：必填，`promotion` 或 `search`
   - `onChunk(chunk)`：接收 skill 返回的 JSON 字符串
 
+## 返回格式
+
+```json
+{
+  "mode": "search",
+  "malls": [
+    {
+      "mall_name": "商场名称",
+      "urls": [
+        {
+          "shopName": "店铺名",
+          "urls": { "键名": "URL地址", ... }
+        },
+        ...
+      ]
+    }
+  ]
+}
+```
+
+promotion 模式下每个商场返回 `promotion_url_for_ai` 和 `promotion_url_for_human`。
+
 ## 实现概要
 
 - 与 `wss://www.shugan.tech/wss/` 建立 WebSocket 连接
 - 发送包含经纬度的指令 JSON
-- 解析返回数据，提取 `bid` 并构造：
-  - `promotion_url_for_ai`（仅 `promotion` 模式）
-  - `promotion_url_for_human`（仅 `promotion` 模式）
-  - `urls`（`search` 模式）
+- 解析返回数据，提取 `bid` 并构造商场数据
 - 10 秒无数据则自动关闭连接
+- **一次性返回所有商场的合并数据**
 
 ## search 模式后续处理
 
-- skill 返回商场名称、店铺列表（`shopName`）及 URL 列表
+- skill 返回多个商场的名称、店铺列表（`shopName`）及 URL 列表
 - **OpenClaw 执行两轮筛选**：
   1. 第一轮：用 LLM 对 `shopName` 和 `urls` 键名进行语义匹配，筛选出相关店铺
   2. 第二轮：对筛选出的店铺，用 Puppeteer 获取每个 URL 的动态页面文本，再用 LLM 对页面文本进行关键词匹配确认

@@ -100,6 +100,7 @@ async function sendInstruction(longitude, latitude, mode, onChunk) {
     let idleTimer = null;
     let resolved = false;
     let pendingCount = 0;
+    let wsClosed = false;
     const processedUuids = new Set();
     const allResults = [];
 
@@ -128,6 +129,22 @@ async function sendInstruction(longitude, latitude, mode, onChunk) {
       }
     };
 
+    let callbackInvoked = false;
+    const invokeCallback = (data) => {
+      if (!callbackInvoked && typeof onChunk === "function") {
+        callbackInvoked = true;
+        onChunk(data);
+      }
+    };
+
+    const tryFinish = () => {
+      if (pendingCount === 0 && wsClosed && !resolved) {
+        cleanup();
+        invokeCallback(JSON.stringify({ mode, malls: allResults }));
+        safeResolve({ code: 1000, reason: 'completed' });
+      }
+    };
+
     const processItem = async (item) => {
       if (!item?.parameters?.url) return;
       const url = item.parameters.url;
@@ -139,6 +156,7 @@ async function sendInstruction(longitude, latitude, mode, onChunk) {
       processedUuids.add(uuid);
 
       const result = buildResultObject(uuid, mode);
+
       if (mode === 'search') {
         pendingCount++;
         const buildingInfoUrl = `https://www.shugan.tech/building/buildingInfo/${uuid}/`;
@@ -154,14 +172,12 @@ async function sendInstruction(longitude, latitude, mode, onChunk) {
           }
           const shopJson = JSON.parse(shopData);
           result.urls = await getShopUrlsForSearch(shopJson);
-          allResults.push(result);
         } catch (e) {
           console.error('[shugan-info] fetch error:', e.message);
         } finally {
           pendingCount--;
-          if (pendingCount === 0 && closed) {
-            safeResolve({ code: 1000, reason: 'completed' });
-          }
+          allResults.push(result);
+          tryFinish();
         }
       } else {
         allResults.push(result);
@@ -204,26 +220,11 @@ async function sendInstruction(longitude, latitude, mode, onChunk) {
 
     ws.on("close", (code, reason) => {
       cleanup();
+      wsClosed = true;
       if (!closed) {
         closed = true;
-        const cleanupAndResolve = () => {
-          if (typeof onChunk === "function") {
-            onChunk(JSON.stringify({ mode, malls: allResults }));
-          }
-          safeResolve({ code, reason: reason.toString() });
-        };
-        if (pendingCount === 0) {
-          cleanupAndResolve();
-        } else {
-          const maxWait = 300000;
-          const startTime = Date.now();
-          const checkInterval = setInterval(() => {
-            if (pendingCount === 0 || Date.now() - startTime > maxWait) {
-              clearInterval(checkInterval);
-              cleanupAndResolve();
-            }
-          }, 5000);
-        }
+        invokeCallback(JSON.stringify({ mode, malls: allResults }));
+        safeResolve({ code, reason: reason.toString() });
       }
     });
   });
