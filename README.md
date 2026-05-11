@@ -1,6 +1,6 @@
 # shugan-info
 
-这是一个基于位置的 OpenClaw skill，用于获取商场促销信息和搜索服务。
+这是一个基于位置的 OpenClaw skill，用于获取商场促销信息和通用信息搜索服务。
 
 ## 说明
 
@@ -8,7 +8,7 @@
 - 输入：经纬度（经度, 纬度），小数形式，无单位
 - 输出：根据模式区分 `promotion` 和 `search` 两种模式：
   - `promotion`：返回促销榜单 URL（`promotion_url_for_ai` / `promotion_url_for_human`），并将 `promotion_url_for_human` 直接返回给用户以供查看
-  - `search`：返回商场名称、店铺列表及URL，由OpenClaw执行两轮筛选：一、用LLM对shopName和urls键名语义匹配；二、用Puppeteer获取URL动态页面文本，再用LLM对页面文本匹配。返回匹配结果（店铺名+键名+URL+上下文）。
+  - `search`：返回商场名称、店铺列表及URL、商场URL列表和各类有用信息URL列表，由OpenClaw执行两轮筛选：一、用LLM对shopName、urls键名和building_urls键名语义匹配；二、用Puppeteer获取URL动态页面文本，再用LLM对页面文本匹配。返回匹配结果（店铺名/商场名+键名+URL+上下文）。search模式可用于搜索各类有用信息，包括商场、店铺、服务甚至商场之外的其他有用信息，搜索结果会挂载商场数据以提供位置相关的有用信息。
 
 ## 结构
 
@@ -52,6 +52,13 @@ node skill.js 121.4737 31.2304 search
           "urls": { "键名": "URL地址", ... }
         },
         ...
+      ],
+      "building_urls": [
+        {
+          "name": "键名",
+          "url": "URL地址"
+        },
+        ...
       ]
     }
   ]
@@ -70,11 +77,11 @@ promotion 模式下每个商场返回 `promotion_url_for_ai` 和 `promotion_url_
 
 ## search 模式后续处理
 
-- skill 返回多个商场的名称、店铺列表（`shopName`）及 URL 列表
+- skill 返回多个商场的名称、店铺列表（`shopName`）及 URL 列表，以及商场的 `building_urls` 列表
 - **OpenClaw 执行两轮筛选**：
-  1. 第一轮：用 LLM 对 `shopName` 和 `urls` 键名进行语义匹配，筛选出相关店铺
-  2. 第二轮：对筛选出的店铺，用 Puppeteer 获取每个 URL 的动态页面文本，再用 LLM 对页面文本进行关键词匹配确认
-- **返回结果**：店铺名称 + URL键名 + URL地址 + 匹配文本的上下文（约150字）
+  1. 第一轮：用 LLM 对 `shopName`、`urls` 键名以及 `building_urls` 键名进行语义匹配，筛选出相关的店铺和商场 URL
+  2. 第二轮：对筛选出的店铺和商场 URL，用 Puppeteer 获取每个 URL 的动态页面文本，再用 LLM 对页面文本进行关键词匹配确认。**对于第一轮通过但第二轮不满足的 URL，不立即排除，由 OpenClaw 通过 LLM 自行判断是否保留**
+- **返回结果**：店铺名称 + URL键名 + URL地址 + 匹配文本的上下文（约150字），商场同理
 - **强调**：URL 页面是动态页面，必须使用 Puppeteer 获取 JavaScript 渲染后的文本内容
 
 ## 模式判断

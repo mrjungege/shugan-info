@@ -1,7 +1,7 @@
 {
   "name": "shugan-info",
   "version": "1.0.0",
-  "description": "基于位置的商场促销信息获取skill，支持promotion和search两种模式。promotion模式返回促销榜单URL；search模式返回商场店铺URL列表，由OpenClaw用LLM进行两轮语义匹配筛选。模式由OpenClaw根据用户指令自动判断。",
+  "description": "基于位置的商场促销信息获取skill，支持promotion和search两种模式。promotion模式返回促销榜单URL；search模式返回商场店铺URL列表和商场URL列表（building_urls），由OpenClaw用LLM进行两轮语义匹配筛选。模式由OpenClaw根据用户指令自动判断。",
   "main": "skill.js",
   "type": "commonjs",
   "scripts": {

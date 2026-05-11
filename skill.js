@@ -54,8 +54,9 @@ function fetchUrlContent(url) {
 function buildResultObject(uuid, mode) {
   if (mode === 'search') {
     return {
-      mall_name: null,
-      urls: []
+      mall_name: '',
+      urls: [],
+      building_urls: []
     };
   }
 
@@ -161,10 +162,12 @@ async function sendInstruction(longitude, latitude, mode, onChunk) {
         pendingCount++;
         const buildingInfoUrl = `https://www.shugan.tech/building/buildingInfo/${uuid}/`;
         const shopUrl = `https://www.shugan.tech/building/shopAndOffice/${uuid}/`;
+        const buildingUrlsUrl = `https://www.shugan.tech/building/queryBuildingUrls/${uuid}/`;
         try {
-          const [buildingData, shopData] = await Promise.all([
+          const [buildingData, shopData, buildingUrlsData] = await Promise.all([
             fetchUrlContent(buildingInfoUrl),
-            fetchUrlContent(shopUrl)
+            fetchUrlContent(shopUrl),
+            fetchUrlContent(buildingUrlsUrl)
           ]);
           const buildingJson = JSON.parse(buildingData);
           if (buildingJson?.name) {
@@ -172,13 +175,18 @@ async function sendInstruction(longitude, latitude, mode, onChunk) {
           }
           const shopJson = JSON.parse(shopData);
           result.urls = await getShopUrlsForSearch(shopJson);
+          const buildingUrlsJson = JSON.parse(buildingUrlsData);
+          result.building_urls = buildingUrlsJson.map(({ id, timestamp, uuid, ...rest }) => rest);
         } catch (e) {
           console.error('[shugan-info] fetch error:', e.message);
-        } finally {
           pendingCount--;
-          allResults.push(result);
-          tryFinish();
+          return;
         }
+        pendingCount--;
+        if (result.mall_name) {
+          allResults.push(result);
+        }
+        tryFinish();
       } else {
         allResults.push(result);
       }
@@ -240,7 +248,10 @@ async function handleUserInstruction(longitude, latitude, optionsOrOnChunk, onCh
     options = optionsOrOnChunk;
   }
 
-  const mode = options.mode || 'search';
+  if (!options.mode) {
+    throw new Error("options.mode is required, must be 'promotion' or 'search'");
+  }
+  const mode = options.mode;
   return sendInstruction(longitude, latitude, mode, callback);
 }
 
