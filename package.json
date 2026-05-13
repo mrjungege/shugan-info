@@ -1,13 +1,22 @@
 {
   "name": "shugan-info",
   "version": "1.0.0",
-  "description": "这是一个获取基于位置的商业促销信息、优惠券和免费福利信息的skill。它通过监听用户指令中的关键词（促销、优惠、折扣、打折、商场、免费、福利、薅羊毛、白嫖、免费领取、福利活动、羊毛、免费试用、免费体验、免费活动、免费福利、薅羊毛活动、特价、优惠券、满减、限时优惠、活动、促销活动、折扣券、打折活动、优惠活动、商场活动）来触发。",
+  "description": "基于位置的商场促销信息获取skill，支持promotion和search两种模式。promotion模式返回促销榜单URL；search模式返回商场店铺URL列表和商场URL列表（building_urls），由OpenClaw用LLM进行两轮语义匹配筛选。模式由OpenClaw根据用户指令自动判断。",
   "main": "skill.js",
   "type": "commonjs",
   "scripts": {
-    "test": "node ./skill.js --help"
+    "test": "node ./skill.js 121.4737 31.2304 promotion",
+    "test:promotion": "node ./skill.js 121.4737 31.2304 promotion",
+    "test:search": "node ./skill.js 121.4737 31.2304 search"
   },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mrjungege/shugan-info"
+  },
+  "author": "Jungle You",
+  "license": "MIT",
   "dependencies": {
     "ws": "^8.13.0"
-  }
+  },
+  "devDependencies": {}
 }
