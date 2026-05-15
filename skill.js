@@ -226,11 +226,13 @@ async function sendInstruction(longitude, latitude, mode, onChunk) {
     const processItem = async (item) => {
       if (!item?.parameters?.url) return;
       const url = item.parameters.url;
-      const bidIndex = url.indexOf('bid=');
-      if (bidIndex === -1) return;
+
+      // 只对以 https://www.shugan.tech/building/?bid= 开头的url提取uuid
+      const prefix = 'https://www.shugan.tech/building/?bid=';
+      if (!url.startsWith(prefix)) return;
 
       // 提取建筑 UUID
-      const uuid = url.substring(bidIndex + 4).split('&')[0];
+      const uuid = url.substring(prefix.length).split('&')[0];
       if (processedUuids.has(uuid)) return;
       processedUuids.add(uuid);
 
