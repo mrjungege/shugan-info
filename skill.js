@@ -1,9 +1,29 @@
+/**
+ * 树感信息技能 (shugan-info)
+ *
+ * 通过 WebSocket 连接获取指定GPS位置周边的商铺和建筑信息。
+ * 支持两种模式：
+ * - promotion 模式：返回商铺推广信息 URL
+ * - search 模式：返回商铺详细信息、URL列表和建筑 URL 列表
+ *
+ * @author Jungle You
+ */
+
 const https = require("https");
 const WebSocket = require("ws");
 const { randomUUID } = require("crypto");
 
+// WebSocket 服务地址
 const WS_URL = "wss://www.shugan.tech/wss/";
 
+/**
+ * 构造感知指令
+ *
+ * @param longitude 经度
+ * @param latitude 纬度
+ * @param mode 模式 ('search' 或 'promotion')
+ * @returns JSON 字符串格式的指令
+ */
 function wrapInstruction(longitude, latitude, mode) {
   return JSON.stringify({
     command: 'sense',
@@ -18,6 +38,11 @@ function wrapInstruction(longitude, latitude, mode) {
   });
 }
 
+/**
+ * 创建 WebSocket 连接
+ *
+ * @returns WebSocket 实例
+ */
 function createWebSocket() {
   return new WebSocket(WS_URL, {
     handshakeTimeout: 10000,
@@ -25,6 +50,12 @@ function createWebSocket() {
   });
 }
 
+/**
+ * 获取 URL 内容
+ *
+ * @param url 目标 URL
+ * @returns URL 内容（字符串）
+ */
 function fetchUrlContent(url) {
   return new Promise((resolve, reject) => {
     const req = https.get(url, { timeout: 30000 }, (res) => {
@@ -51,6 +82,13 @@ function fetchUrlContent(url) {
   });
 }
 
+/**
+ * 构建结果对象
+ *
+ * @param uuid 建筑 UUID
+ * @param mode 模式
+ * @returns 结果对象
+ */
 function buildResultObject(uuid, mode) {
   if (mode === 'search') {
     return {
@@ -67,8 +105,12 @@ function buildResultObject(uuid, mode) {
 }
 
 /**
- * 获取商场所有店铺的URL列表（search模式专用）
- * 返回原始数据，由openclaw用LLM进行语义匹配
+ * 获取商场所有店铺的 URL 列表（search 模式专用）
+ *
+ * 返回原始数据，由 OpenClaw 用 LLM 进行语义匹配
+ *
+ * @param obj 店铺数据对象
+ * @returns 店铺 URL 列表
  */
 async function getShopUrlsForSearch(obj) {
   if (!obj.shops || typeof obj.shops !== 'object') {
@@ -90,8 +132,18 @@ async function getShopUrlsForSearch(obj) {
   return results;
 }
 
+// 无数据超时时间（毫秒）
 const NO_DATA_TIMEOUT_MS = 10000;
 
+/**
+ * 发送感知指令并处理响应
+ *
+ * @param longitude 经度
+ * @param latitude 纬度
+ * @param mode 模式 ('search' 或 'promotion')
+ * @param onChunk 数据块回调函数
+ * @returns Promise，解析为完成结果
+ */
 async function sendInstruction(longitude, latitude, mode, onChunk) {
   const payload = wrapInstruction(longitude, latitude, mode);
   const ws = createWebSocket();
@@ -105,6 +157,11 @@ async function sendInstruction(longitude, latitude, mode, onChunk) {
     const processedUuids = new Set();
     const allResults = [];
 
+    /**
+     * 重置空闲计时器
+     *
+     * 如果在规定时间内没有收到数据，关闭 WebSocket 连接
+     */
     const resetIdleTimer = () => {
       if (idleTimer) {
         clearTimeout(idleTimer);
@@ -116,6 +173,9 @@ async function sendInstruction(longitude, latitude, mode, onChunk) {
       }, NO_DATA_TIMEOUT_MS);
     };
 
+    /**
+     * 清理资源
+     */
     const cleanup = () => {
       if (idleTimer) {
         clearTimeout(idleTimer);
@@ -123,6 +183,13 @@ async function sendInstruction(longitude, latitude, mode, onChunk) {
       }
     };
 
+    /**
+     * 安全解析 Promise
+     *
+     * 确保只解析一次
+     *
+     * @param val 解析值
+     */
     const safeResolve = (val) => {
       if (!resolved) {
         resolved = true;
@@ -138,6 +205,11 @@ async function sendInstruction(longitude, latitude, mode, onChunk) {
       }
     };
 
+    /**
+     * 尝试完成处理
+     *
+     * 当所有请求完成且 WebSocket 关闭时，返回最终结果
+     */
     const tryFinish = () => {
       if (pendingCount === 0 && wsClosed && !resolved) {
         cleanup();
@@ -146,12 +218,18 @@ async function sendInstruction(longitude, latitude, mode, onChunk) {
       }
     };
 
+    /**
+     * 处理单个数据项
+     *
+     * @param item 数据项
+     */
     const processItem = async (item) => {
       if (!item?.parameters?.url) return;
       const url = item.parameters.url;
       const bidIndex = url.indexOf('bid=');
       if (bidIndex === -1) return;
 
+      // 提取建筑 UUID
       const uuid = url.substring(bidIndex + 4).split('&')[0];
       if (processedUuids.has(uuid)) return;
       processedUuids.add(uuid);
@@ -164,6 +242,7 @@ async function sendInstruction(longitude, latitude, mode, onChunk) {
         const shopUrl = `https://www.shugan.tech/building/shopAndOffice/${uuid}/`;
         const buildingUrlsUrl = `https://www.shugan.tech/building/queryBuildingUrls/${uuid}/`;
         try {
+          // 并行获取建筑信息、店铺信息和建筑 URL
           const [buildingData, shopData, buildingUrlsData] = await Promise.all([
             fetchUrlContent(buildingInfoUrl),
             fetchUrlContent(shopUrl),
@@ -176,6 +255,7 @@ async function sendInstruction(longitude, latitude, mode, onChunk) {
           const shopJson = JSON.parse(shopData);
           result.urls = await getShopUrlsForSearch(shopJson);
           const buildingUrlsJson = JSON.parse(buildingUrlsData);
+          // 移除不需要的字段
           result.building_urls = buildingUrlsJson.map(({ id, timestamp, uuid, ...rest }) => rest);
         } catch (e) {
           console.error('[shugan-info] fetch error:', e.message);
@@ -192,6 +272,7 @@ async function sendInstruction(longitude, latitude, mode, onChunk) {
       }
     };
 
+    // WebSocket 连接打开
     ws.on("open", () => {
       ws.send(payload, (err) => {
         if (err) {
@@ -203,6 +284,7 @@ async function sendInstruction(longitude, latitude, mode, onChunk) {
       });
     });
 
+    // 处理接收到的消息
     ws.on("message", async (data) => {
       resetIdleTimer();
       const text = data.toString();
@@ -218,6 +300,7 @@ async function sendInstruction(longitude, latitude, mode, onChunk) {
       }
     });
 
+    // WebSocket 错误处理
     ws.on("error", (error) => {
       cleanup();
       if (!closed) {
@@ -226,6 +309,7 @@ async function sendInstruction(longitude, latitude, mode, onChunk) {
       }
     });
 
+    // WebSocket 关闭处理
     ws.on("close", (code, reason) => {
       cleanup();
       wsClosed = true;
@@ -238,16 +322,27 @@ async function sendInstruction(longitude, latitude, mode, onChunk) {
   });
 }
 
+/**
+ * 处理用户指令
+ *
+ * @param longitude 经度
+ * @param latitude 纬度
+ * @param optionsOrOnChunk 选项对象或回调函数
+ * @param onChunk 回调函数
+ * @returns Promise
+ */
 async function handleUserInstruction(longitude, latitude, optionsOrOnChunk, onChunk) {
   let options = {};
   let callback = onChunk;
 
+  // 处理参数兼容
   if (typeof optionsOrOnChunk === 'function') {
     callback = optionsOrOnChunk;
   } else if (typeof optionsOrOnChunk === 'object' && optionsOrOnChunk !== null) {
     options = optionsOrOnChunk;
   }
 
+  // 验证模式参数
   if (!options.mode) {
     throw new Error("options.mode is required, must be 'promotion' or 'search'");
   }
@@ -255,6 +350,7 @@ async function handleUserInstruction(longitude, latitude, optionsOrOnChunk, onCh
   return sendInstruction(longitude, latitude, mode, callback);
 }
 
+// 直接运行模式
 if (require.main === module) {
   const args = process.argv.slice(2);
   if (args.length !== 2 && args.length !== 3) {
@@ -265,14 +361,19 @@ if (require.main === module) {
   const longitude = parseFloat(args[0]);
   const latitude = parseFloat(args[1]);
   const mode = args[2] || 'search';
+
+  // 验证经纬度参数
   if (isNaN(longitude) || isNaN(latitude)) {
     console.log("Error: longitude and latitude must be valid numbers");
     process.exit(1);
   }
+
+  // 验证模式参数
   if (mode !== 'promotion' && mode !== 'search') {
     console.log("Error: mode must be 'promotion' or 'search'");
     process.exit(1);
   }
+
   handleUserInstruction(longitude, latitude, { mode }, (chunk) => {
     process.stdout.write(chunk);
   }).catch((error) => {
@@ -281,6 +382,7 @@ if (require.main === module) {
   });
 }
 
+// 导出模块接口
 module.exports = {
   invoke: handleUserInstruction,
   handleUserInstruction,
